@@ -1,0 +1,35 @@
+Snake is a tool for managing programming workflow dependencies. It's an attempt at a port of Factual's drake (https://github.com/Factual/drake) to Python.
+
+-To get started with snake:
+1) Install snake.py in the system path.
+2) Create a file named Snakefile in the directory of the data workflow.
+3) Run snake.py in the dataworkflow directory to execute the Snakefile
+
+-Creating a basic Snakefile
+The Snakefile contains the information about the data dependencies. It contains a list of dependency rules and the bash commands they entail.
+
+Example rule:
+"out.txt" <- "in.txt"
+	  echo "test"; cat "in.txt" > "out.txt"
+
+That rule encodes the fact that "out.txt" depends on "in.txt". To generate "out.txt" from "in.txt" snake will run the bash command 'echo "test"; cat "in.txt" > "out.txt"'.
+
+
+More advanced examples:
+
+basic_cmd = """(echo "test"; cat $INPUT0) > $OUTPUT0"""
+
+"v5.txt" <- "v1.txt", "v2.txt" [cmd:basic_cmd]
+"v6.txt" <- "v3.txt", "v4.txt" [cmd:basic_cmd]
+"v7.txt" <- "v5.txt", "v6.txt" [cmd:basic_cmd]
+"v8.txt", "v9.txt" <- "v7.txt" [cmd:basic_cmd]
+"v10.txt", "v11.txt" <- "v8.txt" [cmd:basic_cmd]
+"v12.txt", "v13.txt" <- "v9.txt" [cmd:basic_cmd]
+
+for i in range(1,6):
+    next = i+1
+    output = "n{next}.txt".format(**vars())
+    input = "n{i}.txt".format(**vars())
+    output <- input
+    	   (echo "test"; cat $INPUT0) > $OUTPUT0
+    
