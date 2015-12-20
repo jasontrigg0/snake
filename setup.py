@@ -7,7 +7,7 @@ setup(
     author = "Jason Trigg",
     author_email = "jasontrigg0@gmail.com",
     url = "https://github.com/jasontrigg0/snake",
-    download_url = 'https://github.com/jasontrigg0/snake/tarball/0.1',
+    download_url = 'https://github.com/jasontrigg0/snake/tarball/0.3',
     scripts=['python-snake/snake.py'],
     keywords = [],
     classifiers = [],
