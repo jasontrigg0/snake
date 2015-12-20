@@ -60,12 +60,16 @@ class DependencyGraphSingleton(object):
                 raise Exception("ERROR: can't find input file {f}".format(**vars()))
         if any([not os.path.exists(f) for f in rule.all_nodes()]):
             return True
+        if rule.cmd_cache_stale() and rule._cachecheck:
+            return True
+        
         outputs = rule.out_nodes()
         min_out_time = min([os.path.getmtime(f) for f in outputs] + [1e20]) #default 1e20
 
         inputs = rule.in_nodes()
         max_in_time = max([os.path.getmtime(f) for f in inputs] +     [-1]) #default -1
-        if max_in_time > min_out_time or rule.cmd_cache_stale():
+
+        if max_in_time > min_out_time and rule._timecheck:
             return True
         else:
             return False
@@ -80,13 +84,15 @@ def run(cmd):
 
 
 class Rule(object):
-    def __init__(self, out_nodes, in_nodes, cmd):
+    def __init__(self, out_nodes, in_nodes, cmd, timecheck, cachecheck):
         self._out_nodes = out_nodes
         self._in_nodes = in_nodes
         set_variables_cmd = " ".join(["INPUT{i}={var};".format(**vars()) for i,var in enumerate(self._in_nodes)]) + " " +\
                             " ".join(["OUTPUT{i}={var};".format(**vars()) for i,var in enumerate(self._out_nodes)])
         cmd = set_variables_cmd + '\n' + cmd
         self._cmd = cmd
+        self._timecheck = timecheck
+        self._cachecheck = cachecheck
     def cmd_file(self):
         #write the cmd if changed
         out_hash = abs(hash(tuple(self.out_nodes())))
@@ -118,12 +124,16 @@ class Rule(object):
         return ", ".join(self._out_nodes) + " <- " + ", ".join(self._in_nodes)
 
 
-def define_rule(outfiles, infiles, cmd):
+def define_rule(outfiles, infiles, cmd, options):
     #remove symlinks
-    outfiles = [os.path.realpath(f) for f in outfiles]
-    infiles = [os.path.realpath(f) for f in infiles]
+    def process_filename(f):
+        return os.path.realpath(os.path.expanduser(f))
+    outfiles = [process_filename(f) for f in outfiles] #realpath follows symlinks
+    infiles = [process_filename(f) for f in infiles]
     graph = DependencyGraphSingleton()
-    rule = Rule(outfiles, infiles, cmd)
+    timecheck = 1 * (options.get("timecheck","True") not in ["False","0"])
+    cachecheck = 1 * (options.get("cachecheck","True") not in ["False","0"])
+    rule = Rule(outfiles, infiles, cmd, timecheck, cachecheck)
     graph.add_rule(rule)
 
 def get_all(force=False):
@@ -310,10 +320,12 @@ def preprocess_snakefile(snakefile_string):
         if options:
             options = options.split()
             options = dict([(l.split(":")[0],l.split(":")[1]) for l in options])
+        else:
+            options = {}
         return outputs, inputs, options
 
     lines = snakefile_string.split('\n')
-    lines = [l for l in lines if not l.strip().startswith("#")] #remove comments (TODO: handle comments at the end of lines
+    lines = [l for l in lines if not l.strip().startswith("#")] #remove comments (TODO: handle comments at the end of lines)
     indent_levels = list_condition_blocks(lines, is_rule_def)
     skip = False
     for block in take_all_rule_blocks(lines):
@@ -329,7 +341,7 @@ def preprocess_snakefile(snakefile_string):
             outputs_string = "[" + ",".join(outputs) + "]"
             inputs_string = "[" + ','.join(inputs) + "]"
             leading_whitespace = re.findall("^\s*",block[0])[0]
-            yield leading_whitespace + """define_rule({outputs_string},{inputs_string},{cmd_str})""".format(**vars())
+            yield leading_whitespace + """define_rule({outputs_string},{inputs_string},{cmd_str},{options})""".format(**vars())
         else:
             for l in block:
                 yield l
@@ -396,10 +408,12 @@ if __name__ == "__main__":
         print "Exiting..."
         sys.exit(-1)
 
+    print "---"
     for r in required_rules:
         print "Running: ", r, '\n'
         if verbose:
             print r.cmd()
+            print "---"
         sydout, stderr, return_code = r.execute()
         if return_code != 0:
             sys.stderr.write("ERROR in command: \n" + r.cmd() + '\n\n' + stderr + '\n')
@@ -408,4 +422,3 @@ if __name__ == "__main__":
                     print "Removing... ", n
                     os.remove(n)
             sys.exit(-1)
-
