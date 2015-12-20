@@ -1,7 +1,7 @@
 Snake is a tool for managing programming workflow dependencies. It's an attempt at a port of Factual's drake (https://github.com/Factual/drake) to Python.
 
 -To get started with snake:
-1) Install snake.py in the system path.
+1) pip install python-snake
 2) Create a file named Snakefile in the directory of the data workflow.
 3) Run snake.py in the dataworkflow directory to execute the Snakefile
 
