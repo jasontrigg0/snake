@@ -10,7 +10,7 @@ The Snakefile contains the information about the data dependencies. It contains 
 
 Example rule:
 "out.txt" <- "in.txt"
-	  echo "test"; cat "in.txt" > "out.txt"
+          echo "test"; cat "in.txt" > "out.txt"
 
 That rule encodes the fact that "out.txt" depends on "in.txt". To generate "out.txt" from "in.txt" snake will run the bash command 'echo "test"; cat "in.txt" > "out.txt"'.
 
@@ -31,5 +31,5 @@ for i in range(1,6):
     output = "n{next}.txt".format(**vars())
     input = "n{i}.txt".format(**vars())
     output <- input
-    	   (echo "test"; cat $INPUT0) > $OUTPUT0
+        (echo "test"; cat $INPUT0) > $OUTPUT0
     

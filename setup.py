@@ -2,7 +2,7 @@ from distutils.core import setup
 setup(
     name = 'python-snake',
     packages = ['python-snake'],
-    version = '0.0.1',
+    version = "0.0.1",
     description = 'Data workflow tool (rough copy of drake for python)',
     author = "Jason Trigg",
     author_email = "jasontrigg0@gmail.com",
