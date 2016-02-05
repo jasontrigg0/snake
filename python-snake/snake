@@ -6,15 +6,18 @@ import re
 import sys
 import itertools
 import os.path
+import time
+import collections
 
 def readCL():
     parser = argparse.ArgumentParser()
     parser.add_argument("--infile", default="Snakefile")
     parser.add_argument("-v","--verbose",action="store_true")
-    parser.add_argument("-p","--print_all",action="store_true")
+    parser.add_argument("-p","--print_rules",action="store_true")
+    parser.add_argument("--ok",action="store_true",help="mark all rules as okay")
     parser.add_argument("rules", nargs="*")
     args = parser.parse_args()
-    return args.infile, args.verbose, args.print_all, args.rules
+    return args.infile, args.verbose, args.print_rules, args.rules, args.ok
     
 
 class Singleton(type):
@@ -28,7 +31,6 @@ class Singleton(type):
             cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
         return cls._instances[cls]
 
-
 class DependencyGraphSingleton(object):
     __metaclass__ = Singleton
     def __init__(self):
@@ -36,8 +38,6 @@ class DependencyGraphSingleton(object):
         self._required_in_nodes = set()
         self._forward_edges = {}
         self._backward_edges = {}
-    def setup(self, snake_dir):
-        self.snake_dir = snake_dir
     def add_rule(self, rule):
         self._rules.append(rule)
         out_nodes = rule.out_nodes()
@@ -45,39 +45,71 @@ class DependencyGraphSingleton(object):
             if n in self._backward_edges:
                 raise Exception("ERROR: output file {n} listed in multiple rules".format(**vars()))
             self._backward_edges[n] = rule
-    def process_all(self):
-        for r in self._rules:
-            if self.check_timestamp(r) or any([i in force_list for i in self._required_in_nodes]):
-                r.execute()
-                self._required_in_nodes.update(r.in_nodes())
     def backward_edges(self):
+        """Dictionary from files to the rule that creates that file"""
         return self._backward_edges
     def rules(self):
         return self._rules
-    def check_timestamp(self, rule):
-        for f in rule.in_nodes():
-            if not os.path.exists(f) and not f in self.backward_edges():
-                raise Exception("ERROR: can't find input file {f}".format(**vars()))
-        if any([not os.path.exists(f) for f in rule.all_nodes()]):
-            return True
-        if rule.cmd_cache_stale() and rule._cachecheck:
-            return True
-        
+    def setup(self, snake_dir):
+        self.snake_dir = snake_dir
+    @property
+    def active_tags(self):
+        """Store the list of currently active tags. Tags blocks rules from being run
+        unless the rule was forced or all the rule's tags are active.
+        """
+        return self._active_tags
+    @active_tags.setter
+    def active_tags(self, tag_list):
+        self._active_tags = tag_list
+    def tags_ok(self, rule):
+        """Check if the tags are okay to run the rule"""
+        blocked_by_tags = [f for f in rule.out_nodes() + rule.in_nodes() if is_tag(f) and not f in self._active_tags]
+        return not blocked_by_tags
+    def check(self, rule):
+        """Check whether to run the rule. This check depends only on the rule itself, not other rules upstream or downstream
+        Returns: (boolean, reason_string)
+        """
         outputs = rule.out_nodes()
-        min_out_time = min([os.path.getmtime(f) for f in outputs] + [1e20]) #default 1e20
-
         inputs = rule.in_nodes()
-        max_in_time = max([os.path.getmtime(f) for f in inputs] +     [-1]) #default -1
-
-        if max_in_time > min_out_time and rule._timecheck:
-            return True
-        else:
-            return False
+        #missing input files
+        missing_inputs = [f for f in inputs if not os.path.exists(f) and not is_tag(f)]
+        if any([f for f in missing_inputs if not f in self.backward_edges()]):
+            raise Exception("ERROR: can't find input file {f}".format(**vars()))
+        if not self.tags_ok(rule):
+            return False, "blocked by tags"
+        #check if any output files are missing
+        if any([not os.path.exists(f) for f in rule.all_nodes() if not is_tag(f)]) and not missing_inputs:
+            return True,  "missing output"
+        #check if the cmd changed since the last time it was run
+        if rule.cmd_cache_stale() and rule._cachecheck:
+            return True,  "bash command changed since last run"
+        return self.check_timestamp(rule)
+    def check_timestamp(self, rule):
+        outputs = [f for f in rule.out_nodes() if os.path.exists(f)]
+        inputs = [f for f in rule.in_nodes() if os.path.exists(f)]
+        if not inputs:
+            return False, "no input files"
+        min_out_time = min([os.path.getmtime(f) for f in outputs if not is_tag(f)] + [1e20]) #default 1e20
         
+        max_in_time = max([os.path.getmtime(f) for f in inputs if not is_tag(f)] +     [-1]) #default -1
 
+        last_ok_time = rule.last_ok_time() #last time the rule was marked as ok
+
+        if not rule._timecheck:
+            return False, "timecheck turned off"
+
+        if max_in_time <= last_ok_time:
+            return False, "marked ok"
+        
+        if max_in_time > min_out_time:
+            return True, "timecheck"
+        else:
+            return False, "timecheck failed"
+
+        
 def run(cmd):
     import subprocess
-    pipes = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    pipes = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, executable='/bin/bash', shell=True)
     stdout, stderr = pipes.communicate()
     return_code = pipes.returncode
     return stdout, stderr, return_code
@@ -87,15 +119,33 @@ class Rule(object):
     def __init__(self, out_nodes, in_nodes, cmd, timecheck, cachecheck):
         self._out_nodes = out_nodes
         self._in_nodes = in_nodes
+        pipefail_cmd = "set -o pipefail"
         set_variables_cmd = " ".join(["INPUT{i}={var};".format(**vars()) for i,var in enumerate(self._in_nodes)]) + " " +\
                             " ".join(["OUTPUT{i}={var};".format(**vars()) for i,var in enumerate(self._out_nodes)])
-        cmd = set_variables_cmd + '\n' + cmd
+        cmd = pipefail_cmd + "\n" + set_variables_cmd + '\n' + cmd
         self._cmd = cmd
         self._timecheck = timecheck
         self._cachecheck = cachecheck
+    def hash(self):
+        return abs(hash(tuple(self.out_nodes())))
+    def ok_file(self):
+        #write the time that the cmd is marked as ok
+        out_hash = self.hash()
+        snake_dir = DependencyGraphSingleton().snake_dir
+        ok_file = "{snake_dir}/ok_{out_hash}".format(**vars())
+        return ok_file
+    def mark_ok(self):
+        with open(self.ok_file(),'w') as f_out:
+            f_out.write(str(time.time()) + "\n")
+        self.cache_cmd()
+    def last_ok_time(self):
+        if not os.path.exists(self.ok_file()):
+            return 0
+        else:
+            return float(open(self.ok_file()).read().strip())
     def cmd_file(self):
         #write the cmd if changed
-        out_hash = abs(hash(tuple(self.out_nodes())))
+        out_hash = self.hash()
         snake_dir = DependencyGraphSingleton().snake_dir
         cache_file = "{snake_dir}/cmd_{out_hash}".format(**vars())
         return cache_file
@@ -121,13 +171,27 @@ class Rule(object):
     def cmd(self):
         return self._cmd
     def __str__(self):
-        return ", ".join(self._out_nodes) + " <- " + ", ".join(self._in_nodes)
+        return ", ".join([print_filename(f) for f in self._out_nodes]) + " <- " + ", ".join([print_filename(f) for f in self._in_nodes])
 
 
+
+def process_filename(f):
+    if is_tag(f): #tags
+        return f
+    else:
+        return os.path.realpath(os.path.expanduser(f))
+
+def print_filename(f):
+    """Print the relative file if it's cleaner"""
+    relfile = os.path.relpath(f)
+    if not relfile.startswith(".."):
+        return relfile
+    else:
+        return f
+    
+    
 def define_rule(outfiles, infiles, cmd, options):
     #remove symlinks
-    def process_filename(f):
-        return os.path.realpath(os.path.expanduser(f))
     outfiles = [process_filename(f) for f in outfiles] #realpath follows symlinks
     infiles = [process_filename(f) for f in infiles]
     graph = DependencyGraphSingleton()
@@ -136,15 +200,27 @@ def define_rule(outfiles, infiles, cmd, options):
     rule = Rule(outfiles, infiles, cmd, timecheck, cachecheck)
     graph.add_rule(rule)
 
+    
 def get_all(force=False):
     graph = DependencyGraphSingleton()
     nodes_to_update = set()
-    required_rules = []
+    rule_evals = collections.OrderedDict()
     for r in graph.rules():
-        if graph.check_timestamp(r) or force or nodes_to_update.intersection(set(r.in_nodes())):
+        if force:
             nodes_to_update.update(r.out_nodes())
-            required_rules.append(r)
-    return required_rules
+            rule_evals[r] = (True, "forced")
+        elif nodes_to_update.intersection(set(r.in_nodes())) and graph.tags_ok(r):
+            nodes_to_update.update(r.out_nodes())
+            rule_evals[r] = (True, "input file updating")
+        else:
+            boolean, reason = graph.check(r)
+            if boolean:
+                nodes_to_update.update(r.out_nodes())
+            rule_evals[r] = (boolean, reason)
+    for r in graph.rules():
+        if not r in rule_evals:
+            rule_evals[r] = (False, "not downstream")
+    return rule_evals
 
 
 def get_upstream(base_node, force=False):
@@ -154,13 +230,27 @@ def get_upstream(base_node, force=False):
         if upstream_nodes.intersection(set(r.out_nodes())):
             upstream_nodes.update(r.in_nodes())
     nodes_to_update = set()
-    required_rules = []
+    rule_evals = collections.OrderedDict()
     for r in graph.rules():
         if upstream_nodes.intersection(set(r.out_nodes())):
-            if graph.check_timestamp(r) or force or nodes_to_update.intersection(set(r.in_nodes())):
+            if force:
                 nodes_to_update.update(r.out_nodes())
-                required_rules.append(r)
-    return required_rules
+                rule_evals[r] = (True, "forced")
+            elif nodes_to_update.intersection(set(r.in_nodes())) and graph.tags_ok(r):
+                nodes_to_update.update(r.out_nodes())
+                rule_evals[r] = (True, "input file updating")
+            else:
+                boolean, reason = graph.check(r)
+                if boolean:
+                    nodes_to_update.update(r.out_nodes())
+                rule_evals[r] = (boolean, reason)
+    for r in upstream_nodes:
+        if not r in rule_evals:
+            rule_evals[r] = (False, "no change")
+    for r in graph.rules():
+        if not r in rule_evals:
+            rule_evals[r] = (False, "not upstream")
+    return rule_evals
 
 
 def get_downstream(base_node, force=False):
@@ -170,29 +260,49 @@ def get_downstream(base_node, force=False):
         if downstream_nodes.intersection(set(r.in_nodes())):
             downstream_nodes.update(r.out_nodes())
     nodes_to_update = set()
-    required_rules = []
+    rule_evals = collections.OrderedDict()
     for r in graph.rules():
         if downstream_nodes.intersection(set(r.in_nodes())):
-            if graph.check_timestamp(r) or force or nodes_to_update.intersection(set(r.in_nodes())):
+            if force:
                 nodes_to_update.update(r.out_nodes())
-                required_rules.append(r)
-    return required_rules
+                rule_evals[r] = (True,"force")
+            elif nodes_to_update.intersection(set(r.in_nodes())) and graph.tags_ok(r):
+                nodes_to_update.update(r.out_nodes())
+                rule_evals[r] = (True,"input file updating")
+            else:
+                boolean, reason = graph.check(r)
+                if boolean:
+                    nodes_to_update.update(r.out_nodes())
+                rule_evals[r] = (boolean, reason)
+    for r in downstream_nodes:
+        if not r in rule_evals:
+            rule_evals[r] = (False, "no change")
+    for r in graph.rules():
+        if not r in rule_evals:
+            rule_evals[r] = (False, "not downstream")
+    return rule_evals
 
 
 def get_exact(base_node, force=False):
     graph = DependencyGraphSingleton()
-    required_rules = []
+    rule_evals = collections.OrderedDict()
     for r in graph.rules():
-        if (base_node in r.out_nodes()) and (graph.check_timestamp(r) or force):
-            required_rules.append(r)
-    return required_rules
+        if not (base_node in r.out_nodes()):
+            continue
+        if force:
+            rule_evals[r] = (True, "forced")
+        else:
+            boolean, reason = graph.check(r)
+            rule_evals[r] = (boolean, reason)
+    for r in graph.rules():
+        if not r in rule_evals:
+            rule_evals[r] = (False, "not considered")
+    return rule_evals
 
 
 def get_required_rules(expression):
-    force = expression.startswith("+")
-    regex_match = re.findall("^(\+?(\^|=)?)(.*)",expression)[0]
-    prefix, body = regex_match[0], regex_match[2]
-    body = os.path.realpath(body)
+    prefix, body = parse_rule_input(expression)
+    body = process_filename(body)
     force = prefix.startswith("+")
     exact = "=" in prefix
     downstream = "^" in prefix
@@ -206,6 +316,30 @@ def get_required_rules(expression):
     else:
         raise Exception("ERROR: couldn't parse expression {expression}".format(**vars()))
 
+def combine_rule_evals(list_of_rule_evals):
+    output_rule_eval = collections.OrderedDict()
+    for rule_eval in list_of_rule_evals:
+        for r in rule_eval:
+            run_status, reason = rule_eval[r]
+            if run_status:
+                output_rule_eval[r] = rule_eval[r]
+            elif not r in output_rule_eval:
+                output_rule_eval[r] = rule_eval[r]
+    return output_rule_eval
+    
+    
+def get_tags(expression):
+    _, body = parse_rule_input(expression)
+    if is_tag(body):
+        yield body
+
+def is_tag(f):
+    return f.startswith("%")
+        
+def parse_rule_input(expression):
+    regex_match = re.findall("^(\+?(\^|=)?)(.*)",expression)[0]
+    prefix, body = regex_match[0], regex_match[2]
+    return prefix, body
 
 def sort_rules(rule_set):
     graph = DependencyGraphSingleton()
@@ -363,10 +497,60 @@ def get_snake_dir(infile):
     infile_dir = os.path.dirname(infile_absolute_path)
     snake_dir = infile_dir + "/.snake"
     return snake_dir
-            
 
+
+def mark_rules_ok(rules):
+    print "The following rules with be marked as ok:"
+    print_rules(rules)
+    confirm_or_die()
+    for r in rules:
+        r.mark_ok()
+    
+def run_rules(rules, verbose, rule_evals=None):
+    print "---"
+    for r in rules:
+        print "Running: ", r, '\n'
+        if verbose:
+            print r.cmd()
+            print "---"
+        sydout, stderr, return_code = r.execute()
+        if return_code not in [0,141]: #ignore 141, which is SIGPIPE error
+            sys.stderr.write("ERROR in command: \n" + r.cmd() + '\n\n' + stderr + '\n')
+            if y_n_input("Erase output files from step that errored? [y/n]" + '\n'):
+                for n in r.out_nodes():
+                    print "Removing... ", n
+                    os.remove(n)
+            sys.exit(-1)
+
+def print_rules_by_status(rules, rule_evals):
+    print "The following steps will be run:"
+    for i,r in enumerate(rules):
+        run_status, reason = rule_evals[r]
+        if run_status:
+            print "  " + str(i+1)+":" + " " + str(r) + " " + "[reason: "+reason+"]"
+    print
+    print "The following steps will *not* be run:"
+    for i,r in enumerate(rules):
+        run_status, reason = rule_evals[r]
+        if not run_status:
+            print "  " + str(i+1)+":" + " " + str(r) + " " + "[reason: "+reason+"]"
+    
+def print_rules(rules, rule_evals=None):
+    for i,r in enumerate(rules):
+        s = "  " + str(i+1)+":" + " " + str(r)
+        if rule_evals:
+            run_status, reason = rule_evals[r]
+            s += " " + "[reason: " + reason + "]"
+        print s
+        
+def confirm_or_die():
+    if not y_n_input("Confirm? [y/n]" + "\n"):
+        print "Exiting..."
+        sys.exit(-1)
+            
+            
 if __name__ == "__main__":
-    infile, verbose, print_all, args = readCL()
+    infile, verbose, do_print_rules, args, ok = readCL()
 
     snake_dir = get_snake_dir(infile)
     if not os.path.exists(snake_dir):
@@ -381,44 +565,34 @@ if __name__ == "__main__":
     #initialize DependencyGraph:
     graph = DependencyGraphSingleton()
     graph.setup(snake_dir)
-
-    if print_all:
-        for i,r in enumerate(graph.rules()):
-            print "  " + str(i+1)+":" + " " + str(r)
-        sys.exit(0)
-            
+    
+    graph.active_tags = set([t for a in args for t in get_tags(a)])
 
     if not args:
-        required_rules = get_all() #graph.process_all()
+        rule_evals = get_all()
     else:
-        required_rules = set([r for a in args for r in get_required_rules(a)])
+        rule_evals = combine_rule_evals([get_required_rules(a) for a in args])
         
-    required_rules = list(sort_rules(required_rules))
+    required_rules = [r for r,r_eval in rule_evals.items() if r_eval[0]]
 
-    if not required_rules:
+    #print_rules
+    if do_print_rules and not args:
+        print_rules(graph.rules())
+        sys.exit(0)
+
+    if ok:
+        mark_rules_ok(required_rules)
+        sys.exit(-1)
+        
+    #run_rules
+    if verbose:
+        print_rules_by_status(graph.rules(), rule_evals)
+    elif not required_rules:
         print "Nothing to do."
         sys.exit(-1)
-
-
-    print "The following steps will be run, in order:"
-    for i,r in enumerate(required_rules):
-        print "  " + str(i+1)+":" + " " + str(r)
-
-    if not y_n_input("Confirm? [y/n]" + '\n'):
-        print "Exiting..."
-        sys.exit(-1)
-
-    print "---"
-    for r in required_rules:
-        print "Running: ", r, '\n'
-        if verbose:
-            print r.cmd()
-            print "---"
-        sydout, stderr, return_code = r.execute()
-        if return_code != 0:
-            sys.stderr.write("ERROR in command: \n" + r.cmd() + '\n\n' + stderr + '\n')
-            if y_n_input("Erase output files from step that errored? [y/n]" + '\n'):
-                for n in r.out_nodes():
-                    print "Removing... ", n
-                    os.remove(n)
-            sys.exit(-1)
+    else:
+        print "The following steps will be run, in order:"
+        print_rules(required_rules)
+    confirm_or_die()
+    
+    run_rules(required_rules, verbose, rule_evals)
