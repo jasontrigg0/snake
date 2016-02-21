@@ -558,6 +558,7 @@ if __name__ == "__main__":
 
     # print args
     with open(infile) as f_in:
+        os.chdir(os.path.dirname(infile))
         parsed = '\n'.join(list(preprocess_snakefile(f_in.read())))
         # print parsed
         exec(parsed)
