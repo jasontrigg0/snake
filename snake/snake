@@ -556,9 +556,10 @@ if __name__ == "__main__":
     if not os.path.exists(snake_dir):
         os.mkdir(snake_dir)
 
-    # print args
     with open(infile) as f_in:
-        os.chdir(os.path.dirname(infile))
+        curr_dir = os.path.dirname(infile)
+        if not curr_dir: curr_dir = "."
+        os.chdir(curr_dir)
         parsed = '\n'.join(list(preprocess_snakefile(f_in.read())))
         # print parsed
         exec(parsed)
