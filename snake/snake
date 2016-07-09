@@ -50,6 +50,12 @@ class DependencyGraphSingleton(object):
         return self._backward_edges
     def rules(self):
         return self._rules
+    def all_out_nodes(self):
+        out = []
+        for r in self._rules:
+            for n in r.out_nodes():
+                out.append(n)
+        return out
     def setup(self, snake_dir):
         self.snake_dir = snake_dir
     @property
@@ -120,9 +126,10 @@ class Rule(object):
         self._out_nodes = out_nodes
         self._in_nodes = in_nodes
         pipefail_cmd = "set -o pipefail"
+        crash_on_first_error = "set -e"
         set_variables_cmd = " ".join(["INPUT{i}={var};".format(**vars()) for i,var in enumerate(self._in_nodes)]) + " " +\
                             " ".join(["OUTPUT{i}={var};".format(**vars()) for i,var in enumerate(self._out_nodes)])
-        cmd = pipefail_cmd + "\n" + set_variables_cmd + '\n' + cmd
+        cmd = pipefail_cmd + "\n" + crash_on_first_error + "\n" + set_variables_cmd + '\n' + cmd
         self._cmd = cmd
         self._timecheck = timecheck
         self._cachecheck = cachecheck
@@ -316,6 +323,27 @@ def get_required_rules(expression):
     else:
         raise Exception("ERROR: couldn't parse expression {expression}".format(**vars()))
 
+def regex_arg(arg):
+    """
+    Example:
+        >>> regex_arg("+=@.py")
+        ["+=pawk.py","+=a.py"]
+    Args:
+        args: string
+    Returns:
+        list of 
+    """
+    prefix, body = parse_rule_input(arg)
+    if body[0] == "@": #"@" means regex
+        regex = body[1:]
+        matches = []
+        for n in DependencyGraphSingleton().all_out_nodes():
+            if re.findall(regex, n):
+                matches.append(n)
+        return matches
+    else:
+        return [arg]
+    
 def combine_rule_evals(list_of_rule_evals):
     output_rule_eval = collections.OrderedDict()
     for rule_eval in list_of_rule_evals:
@@ -513,14 +541,18 @@ def run_rules(rules, verbose, rule_evals=None):
         if verbose:
             print r.cmd()
             print "---"
-        sydout, stderr, return_code = r.execute()
+        stdout, stderr, return_code = r.execute()
         if return_code not in [0,141]: #ignore 141, which is SIGPIPE error
             sys.stderr.write("ERROR in command: \n" + r.cmd() + '\n\n' + stderr + '\n')
             if y_n_input("Erase output files from step that errored? [y/n]" + '\n'):
                 for n in r.out_nodes():
+                    if is_tag(n):
+                        continue
                     print "Removing... ", n
                     os.remove(n)
             sys.exit(-1)
+        print stdout
+        print stderr
 
 def print_rules_by_status(rules, rule_evals):
     print "The following steps will be run:"
@@ -573,7 +605,7 @@ if __name__ == "__main__":
     if not args:
         rule_evals = get_all()
     else:
-        rule_evals = combine_rule_evals([get_required_rules(a) for a in args])
+        rule_evals = combine_rule_evals([get_required_rules(k) for a in args for k in regex_arg(a)])
         
     required_rules = [r for r,r_eval in rule_evals.items() if r_eval[0]]
 
