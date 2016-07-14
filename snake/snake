@@ -339,7 +339,7 @@ def regex_arg(arg):
         matches = []
         for n in DependencyGraphSingleton().all_out_nodes():
             if re.findall(regex, n):
-                matches.append(n)
+                matches.append(prefix + n)
         return matches
     else:
         return [arg]
@@ -617,7 +617,7 @@ if __name__ == "__main__":
     if ok:
         mark_rules_ok(required_rules)
         sys.exit(-1)
-        
+
     #run_rules
     if verbose:
         print_rules_by_status(graph.rules(), rule_evals)
@@ -628,5 +628,5 @@ if __name__ == "__main__":
         print "The following steps will be run, in order:"
         print_rules(required_rules)
     confirm_or_die()
-    
+
     run_rules(required_rules, verbose, rule_evals)
