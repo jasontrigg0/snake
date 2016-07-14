@@ -11,7 +11,7 @@ import collections
 
 def readCL():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--infile", default="Snakefile")
+    parser.add_argument("-f","--infile", default="Snakefile")
     parser.add_argument("-v","--verbose",action="store_true")
     parser.add_argument("-p","--print_rules",action="store_true")
     parser.add_argument("--ok",action="store_true",help="mark all rules as okay")
