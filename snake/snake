@@ -127,8 +127,8 @@ class Rule(object):
         self._in_nodes = in_nodes
         pipefail_cmd = "set -o pipefail"
         crash_on_first_error = "set -e"
-        set_variables_cmd = " ".join(["INPUT{i}={var};".format(**vars()) for i,var in enumerate(self._in_nodes)]) + " " +\
-                            " ".join(["OUTPUT{i}={var};".format(**vars()) for i,var in enumerate(self._out_nodes)])
+        set_variables_cmd = " ".join(['INPUT{i}="{var}";'.format(**vars()) for i,var in enumerate(self._in_nodes)]) + " " +\
+                            " ".join(['OUTPUT{i}="{var}";'.format(**vars()) for i,var in enumerate(self._out_nodes)])
         cmd = pipefail_cmd + "\n" + crash_on_first_error + "\n" + set_variables_cmd + '\n' + cmd
         self._cmd = cmd
         self._timecheck = timecheck
