@@ -18,11 +18,11 @@ def readCL():
     parser.add_argument("rules", nargs="*")
     args = parser.parse_args()
     return args.infile, args.verbose, args.print_rules, args.rules, args.ok
-    
+
 
 class Singleton(type):
     """
-    metaclass singleton pattern from 
+    metaclass singleton pattern from
     http://stackoverflow.com/questions/6760685/creating-a-singleton-in-python
     """
     _instances = {}
@@ -96,7 +96,7 @@ class DependencyGraphSingleton(object):
         if not inputs:
             return False, "no input files"
         min_out_time = min([os.path.getmtime(f) for f in outputs if not is_tag(f)] + [1e20]) #default 1e20
-        
+
         max_in_time = max([os.path.getmtime(f) for f in inputs if not is_tag(f)] +     [-1]) #default -1
 
         last_ok_time = rule.last_ok_time() #last time the rule was marked as ok
@@ -106,13 +106,12 @@ class DependencyGraphSingleton(object):
 
         if max_in_time <= last_ok_time:
             return False, "marked ok"
-        
+
         if max_in_time > min_out_time:
             return True, "timecheck"
         else:
             return False, "timecheck failed"
 
-        
 def run(cmd):
     import subprocess
     pipes = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, executable='/bin/bash', shell=True)
@@ -120,16 +119,23 @@ def run(cmd):
     return_code = pipes.returncode
     return stdout, stderr, return_code
 
-
 class Rule(object):
     def __init__(self, out_nodes, in_nodes, cmd, timecheck, cachecheck):
         self._out_nodes = out_nodes
         self._in_nodes = in_nodes
         pipefail_cmd = "set -o pipefail"
         crash_on_first_error = "set -e"
-        set_variables_cmd = " ".join(['INPUT{i}="{var}";'.format(**vars()) for i,var in enumerate(self._in_nodes)]) + " " +\
-                            " ".join(['OUTPUT{i}="{var}";'.format(**vars()) for i,var in enumerate(self._out_nodes)])
-        cmd = pipefail_cmd + "\n" + crash_on_first_error + "\n" + set_variables_cmd + '\n' + cmd
+        inputs = [("INPUT{i}".format(**vars()),var) for i,var in enumerate(self._in_nodes)]
+        outputs = [("OUTPUT{i}".format(**vars()),var) for i,var in enumerate(self._out_nodes)]
+        set_variables_cmd = " ".join(['{name}="{val}";'.format(**vars()) for name,val in inputs]) + " " +\
+                            " ".join(['{name}="{val}";'.format(**vars()) for name,val in outputs])
+        self._main_cmd = cmd
+
+        self._print_cmd = self._main_cmd
+        for name,val in inputs + outputs:
+            self._print_cmd = self._print_cmd.replace("$"+name, val)
+
+        cmd = pipefail_cmd + "\n" + crash_on_first_error + "\n" + set_variables_cmd + '\n' + self._main_cmd
         self._cmd = cmd
         self._timecheck = timecheck
         self._cachecheck = cachecheck
@@ -177,9 +183,10 @@ class Rule(object):
         return set(self._in_nodes).union(set(self._out_nodes))
     def cmd(self):
         return self._cmd
+    def print_cmd(self):
+        return self._print_cmd
     def __str__(self):
         return ", ".join([print_filename(f) for f in self._out_nodes]) + " <- " + ", ".join([print_filename(f) for f in self._in_nodes])
-
 
 
 def process_filename(f):
@@ -195,8 +202,8 @@ def print_filename(f):
         return relfile
     else:
         return f
-    
-    
+
+
 def define_rule(outfiles, infiles, cmd, options):
     #remove symlinks
     outfiles = [process_filename(f) for f in outfiles] #realpath follows symlinks
@@ -207,7 +214,7 @@ def define_rule(outfiles, infiles, cmd, options):
     rule = Rule(outfiles, infiles, cmd, timecheck, cachecheck)
     graph.add_rule(rule)
 
-    
+
 def get_all(force=False):
     graph = DependencyGraphSingleton()
     nodes_to_update = set()
@@ -331,7 +338,7 @@ def regex_arg(arg):
     Args:
         args: string
     Returns:
-        list of 
+        list of
     """
     prefix, body = parse_rule_input(arg)
     if body[0] == "@": #"@" means regex
@@ -343,7 +350,7 @@ def regex_arg(arg):
         return matches
     else:
         return [arg]
-    
+
 def combine_rule_evals(list_of_rule_evals):
     output_rule_eval = collections.OrderedDict()
     for rule_eval in list_of_rule_evals:
@@ -354,8 +361,8 @@ def combine_rule_evals(list_of_rule_evals):
             elif not r in output_rule_eval:
                 output_rule_eval[r] = rule_eval[r]
     return output_rule_eval
-    
-    
+
+
 def get_tags(expression):
     _, body = parse_rule_input(expression)
     if is_tag(body):
@@ -363,7 +370,7 @@ def get_tags(expression):
 
 def is_tag(f):
     return f.startswith("%")
-        
+
 def parse_rule_input(expression):
     regex_match = re.findall("^(\+?(\^|=)?)(.*)",expression)[0]
     prefix, body = regex_match[0], regex_match[2]
@@ -410,7 +417,7 @@ def list_condition_blocks(l, fn):
     return blocks
 
 
-    
+
 
 def preprocess_snakefile(snakefile_string):
     def indent_depth(x):
@@ -509,7 +516,7 @@ def preprocess_snakefile(snakefile_string):
                 yield l
 
 
-                
+
 def y_n_input(message):
     out = raw_input(message)
     while True:
@@ -533,17 +540,17 @@ def mark_rules_ok(rules):
     confirm_or_die()
     for r in rules:
         r.mark_ok()
-    
+
 def run_rules(rules, verbose, rule_evals=None):
     print "---"
     for r in rules:
         print "Running: ", r, '\n'
         if verbose:
-            print r.cmd()
+            print r.print_cmd()
             print "---"
         stdout, stderr, return_code = r.execute()
         if return_code not in [0,141]: #ignore 141, which is SIGPIPE error
-            sys.stderr.write("ERROR in command: \n" + r.cmd() + '\n\n' + stderr + '\n')
+            sys.stderr.write("ERROR in command: \n" + r.print_cmd() + '\n\n' + stderr + '\n')
             if y_n_input("Erase output files from step that errored? [y/n]" + '\n'):
                 for n in r.out_nodes():
                     if is_tag(n):
@@ -566,7 +573,7 @@ def print_rules_by_status(rules, rule_evals):
         run_status, reason = rule_evals[r]
         if not run_status:
             print "  " + str(i+1)+":" + " " + str(r) + " " + "[reason: "+reason+"]"
-    
+
 def print_rules(rules, rule_evals=None):
     for i,r in enumerate(rules):
         s = "  " + str(i+1)+":" + " " + str(r)
@@ -574,13 +581,13 @@ def print_rules(rules, rule_evals=None):
             run_status, reason = rule_evals[r]
             s += " " + "[reason: " + reason + "]"
         print s
-        
+
 def confirm_or_die():
     if not y_n_input("Confirm? [y/n]" + "\n"):
         print "Exiting..."
         sys.exit(-1)
-            
-            
+
+
 if __name__ == "__main__":
     infile, verbose, do_print_rules, args, ok = readCL()
 
@@ -599,14 +606,14 @@ if __name__ == "__main__":
     #initialize DependencyGraph:
     graph = DependencyGraphSingleton()
     graph.setup(snake_dir)
-    
+
     graph.active_tags = set([t for a in args for t in get_tags(a)])
 
     if not args:
         rule_evals = get_all()
     else:
         rule_evals = combine_rule_evals([get_required_rules(k) for a in args for k in regex_arg(a)])
-        
+
     required_rules = [r for r,r_eval in rule_evals.items() if r_eval[0]]
 
     #print_rules
