@@ -8,6 +8,7 @@ import itertools
 import os.path
 import time
 import collections
+import zlib
 from six import with_metaclass
 
 def readCL():
@@ -139,11 +140,11 @@ class Rule(object):
         self._cmd = cmd
         self._timecheck = timecheck
         self._cachecheck = cachecheck
-    def hash(self):
-        return abs(hash(tuple(self.out_nodes())))
+    def hash_(self):
+        return abs(zlib.adler32(to_bytes(str(self.out_nodes()))))
     def ok_file(self):
         #write the time that the cmd is marked as ok
-        out_hash = self.hash()
+        out_hash = self.hash_()
         snake_dir = DependencyGraphSingleton().snake_dir
         ok_file = "{snake_dir}/ok_{out_hash}".format(**vars())
         return ok_file
@@ -158,7 +159,7 @@ class Rule(object):
             return float(open(self.ok_file()).read().strip())
     def cmd_file(self):
         #write the cmd if changed
-        out_hash = self.hash()
+        out_hash = self.hash_()
         snake_dir = DependencyGraphSingleton().snake_dir
         cache_file = "{snake_dir}/cmd_{out_hash}".format(**vars())
         return cache_file
@@ -393,6 +394,17 @@ def pairwise(iterable):
         zip_fn = itertools.izip
     return zip_fn(a, b)
 
+def to_str(s):
+    if sys.version_info >= (3,0):
+        return str(s, "utf-8")
+    else:
+        return str(s)
+
+def to_bytes(s):
+    if sys.version_info >= (3,0):
+        return bytes(s, "utf-8")
+    else:
+        return bytes(s)
 
 def list_condition_blocks(l, fn):
     """
@@ -554,13 +566,13 @@ def mark_rules_ok(rules):
 def run_rules(rules, verbose, rule_evals=None):
     print("---")
     for r in rules:
-        print("Running: ", r, '\n')
+        print("Running: " + str(r) + '\n')
         if verbose:
             print(r.print_cmd())
             print("---")
         stdout, stderr, return_code = r.execute()
         if return_code not in [0,141]: #ignore 141, which is SIGPIPE error
-            sys.stderr.write("ERROR in command: \n" + r.print_cmd() + '\n\n' + stderr + '\n')
+            sys.stderr.write("ERROR in command: \n" + r.print_cmd() + '\n\n' + to_str(stderr) + '\n')
             if y_n_input("Erase output files from step that errored? [y/n]" + '\n'):
                 for n in r.out_nodes():
                     if is_tag(n):
@@ -568,8 +580,8 @@ def run_rules(rules, verbose, rule_evals=None):
                     print("Removing... ", n)
                     os.remove(n)
             sys.exit(-1)
-        print(stdout)
-        print(stderr)
+        print(to_str(stdout))
+        print(to_str(stderr))
 
 def print_rules_by_status(rules, rule_evals):
     print("The following steps will be run:")
