@@ -577,8 +577,9 @@ def run_rules(rules, verbose, rule_evals=None):
                 for n in r.out_nodes():
                     if is_tag(n):
                         continue
-                    print("Removing... ", n)
-                    os.remove(n)
+                    if os.path.exists(n):
+                        print("Removing... ", n)
+                        os.remove(n)
             sys.exit(-1)
         print(to_str(stdout))
         print(to_str(stderr))
