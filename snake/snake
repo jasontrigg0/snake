@@ -9,7 +9,7 @@ import os.path
 import time
 import collections
 import zlib
-from six import with_metaclass
+import six
 
 def readCL():
     parser = argparse.ArgumentParser()
@@ -33,7 +33,7 @@ class Singleton(type):
             cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
         return cls._instances[cls]
 
-class DependencyGraphSingleton(with_metaclass(Singleton,object)):
+class DependencyGraphSingleton(six.with_metaclass(Singleton,object)):
     def __init__(self):
         self._rules = []
         self._required_in_nodes = set()
@@ -534,23 +534,16 @@ def preprocess_snakefile(snakefile_string):
             for l in block:
                 yield l
 
-
-def get_input_fn():
-    if sys.version_info > (3,0):
-        return input
-    else:
-        return raw_input
-
-
 def y_n_input(message):
-    out = get_input_fn()(message)
+    out = six.moves.input(message)
     while True:
         if out.lower() == "y":
             return True
         elif out.lower() == "n":
             return False
         else:
-            out = get_input_fn()("Please input y or n" + '\n')
+            out = six.moves.input("Please input y or n" + '\n')
+
 
 def get_snake_dir(infile):
     infile_absolute_path = os.path.abspath(infile)
